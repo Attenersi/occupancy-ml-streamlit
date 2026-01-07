@@ -1,0 +1,13 @@
+Set-Content .gitignore "# Ignore Python Cache
+__pycache__/
+*.pyc
+
+# Ignore large datasets
+python_model/training_datasets/generated_dataset.csv
+*.csv
+
+# Keep specific reports/datasets if needed
+!occupancy_report.csv
+!human_feedback.csv
+!model_f1_scores.csv
+!python_model/training_datasets/datatest.txt"
