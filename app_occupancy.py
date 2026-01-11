@@ -135,11 +135,50 @@ def smart_feature_engineering(df):
 
 def fetch_live_data_placeholder():
     import random
-    mock_co2 = random.randint(400, 1200)
-    mock_temp = random.uniform(19.0, 24.0)
+    
+    # 1. Get the last recorded values (or defaults if starting fresh)
+    if 'live_history' in st.session_state and not st.session_state.live_history.empty:
+        last_row = st.session_state.live_history.iloc[-1]
+        last_co2 = last_row['CO2']
+        last_temp = last_row['Temperature']
+        last_humid = last_row.get('Humidity', 30)
+    else:
+        # Starting baselines (Empty room conditions)
+        last_co2 = 450
+        last_temp = 21.0
+        last_humid = 30.0
+
+    # 2. "Random Walk" Logic (Drift slightly instead of jumping)
+    # CO2 drifts by -10 to +25 (Bias towards rising slightly to simulate people entering)
+    new_co2 = last_co2 + random.randint(-10, 25)
+    
+    # Temperature drifts very slowly (-0.1 to +0.15)
+    new_temp = last_temp + random.uniform(-0.05, 0.1)
+    
+    # Humidity drifts randomly
+    new_humid = last_humid + random.uniform(-0.5, 0.5)
+
+    # 3. Clamp values to keep them realistic
+    # Force CO2 to stay between 400 (fresh air) and 2000 (very stuffy)
+    new_co2 = max(400, min(new_co2, 2000))
+    # Force Temp between 18C and 30C
+    new_temp = max(18.0, min(new_temp, 30.0))
+    # Force Humidity between 20% and 80%
+    new_humid = max(20.0, min(new_humid, 80.0))
+
+    # 4. Calculate Physics (HumidityRatio)
+    # Simple approximation: Humidity Ratio relates to Temp and RH
+    # (Formula: 0.622 * (RH/100 * Psat) / (Patm - ...)) 
+    # We use a simplified linear correlation for the simulation to keep the model happy
+    mock_humidity_ratio = (new_temp * 0.0002) + (new_humid * 0.0001)
+
     return pd.DataFrame([{
         'Date': pd.Timestamp.now(),
-        'Temperature': mock_temp, 'Humidity': 30, 'Light': 100, 'CO2': mock_co2, 'HumidityRatio': 0.004
+        'Temperature': new_temp, 
+        'Humidity': new_humid, 
+        'Light': 500, # Assume lights are ON
+        'CO2': new_co2, 
+        'HumidityRatio': mock_humidity_ratio
     }])
 
 def load_model_from_path(path):
@@ -184,14 +223,56 @@ def render_dashboard_tab():
         return
 
     elif data_mode == "📡 Live Monitor":
-        if st.sidebar.button("▶️ Start Simulation"):
-            placeholder = st.empty()
-            for _ in range(20):
-                new_data = fetch_live_data_placeholder()
-                with placeholder.container():
-                    render_dashboard_charts(st.container(), new_data, dashboard_model, dashboard_features, is_live=True)
+        # 1. Initialize Session State for History if it doesn't exist
+        if 'live_history' not in st.session_state:
+            st.session_state.live_history = pd.DataFrame(columns=['Date', 'Temperature', 'Humidity', 'Light', 'CO2', 'HumidityRatio'])
+
+        # 2. Controls
+        col_controls = st.sidebar.columns(2)
+        start_btn = col_controls[0].button("▶️ Start", key="start_sim")
+        clear_btn = col_controls[1].button("🗑️ Reset", key="reset_sim")
+
+        if clear_btn:
+            st.session_state.live_history = pd.DataFrame(columns=['Date', 'Temperature', 'Humidity', 'Light', 'CO2', 'HumidityRatio'])
+            st.rerun()
+
+        st.write("### 📡 Real-Time Sensor Stream")
+        
+        # 3. Create a single placeholder that we will update (Prevents full screen flash)
+        dashboard_placeholder = st.empty()
+
+        if start_btn:
+            # Run for 50 iterations (or use 'while True' if you want it infinite)
+            for _ in range(50):
+                # A. Fetch single new row
+                new_row = fetch_live_data_placeholder()
+                
+                # B. Add to history (Accumulate data)
+                st.session_state.live_history = pd.concat([st.session_state.live_history, new_row], ignore_index=True)
+                
+                # C. Limit history to last 100 points (to keep app fast)
+                if len(st.session_state.live_history) > 100:
+                    st.session_state.live_history = st.session_state.live_history.iloc[-100:]
+
+                # D. Render the FULL history into the placeholder
+                with dashboard_placeholder.container():
+                    render_dashboard_charts(
+                        st.container(), 
+                        st.session_state.live_history,  # <--- Pass Full History, not just new_row
+                        dashboard_model, 
+                        dashboard_features, 
+                        is_live=True
+                    )
+                
+                # E. Wait slightly
                 time.sleep(1)
-        else: st.write("Ready to connect to sensors.")
+        else:
+            # Show existing data if we are paused
+            if not st.session_state.live_history.empty:
+                with dashboard_placeholder.container():
+                    render_dashboard_charts(st.container(), st.session_state.live_history, dashboard_model, dashboard_features, is_live=True)
+            else:
+                st.info("Click 'Start' to connect to live sensors.")
 
 def render_dashboard_charts(container, df_raw, model, features, is_live=False):
     title_suffix = "(Baseline)" if "Baseline" in str(model) else ""
@@ -199,6 +280,7 @@ def render_dashboard_charts(container, df_raw, model, features, is_live=False):
 
     if not model or not features: return
 
+    # --- 1. FILTERING ---
     if not is_live:
         min_date = df_raw['Date'].min().date()
         max_date = df_raw['Date'].max().date()
@@ -213,6 +295,7 @@ def render_dashboard_charts(container, df_raw, model, features, is_live=False):
     else:
         df_view = df_raw.copy()
 
+    # --- 2. PREDICTION ---
     try:
         df_processed = smart_feature_engineering(df_view)
         if df_processed.empty: st.warning("No data found."); return
@@ -223,7 +306,9 @@ def render_dashboard_charts(container, df_raw, model, features, is_live=False):
         df_processed['Prediction'] = (probs >= 0.5).astype(int)
     except Exception: st.error("Processing Error"); return
 
+    # --- 3. TOP ROW (KPIs + GAUGE/HEATMAP) ---
     col_kpi, col_main = st.columns([1, 4])
+    
     with col_kpi:
         st.metric("Average Occupancy", f"{df_processed['Prediction'].mean() * 100:.1f}%")
         st.metric("Peak CO2 Level", f"{df_processed['CO2'].max():.0f}")
@@ -233,7 +318,6 @@ def render_dashboard_charts(container, df_raw, model, features, is_live=False):
             status = "Occupied" if latest['Prediction'] == 1 else "Vacant"
             st.metric("Current Status", status)
             conf = latest['Probability'] if latest['Prediction'] == 1 else (1 - latest['Probability'])
-            st.metric("AI Confidence", f"{conf * 100:.0f}%", delta="⚠️ Ventilate!" if latest['CO2'] > 1000 else "All Good")
         else:
             if 'Weekday' in df_processed.columns:
                 st.metric("Busiest Day", df_processed.groupby('Weekday')['Prediction'].mean().idxmax())
@@ -242,42 +326,124 @@ def render_dashboard_charts(container, df_raw, model, features, is_live=False):
             st.metric("Bad Air %", f"{bad_air:.1f}%")
 
     with col_main:
-        st.subheader("Occupancy per Hour %")
+        st.subheader("Occupancy Visualization")
         if not is_live:
+            # --- HISTORICAL HEATMAP ---
             heatmap_data = df_processed.groupby(['Hour', 'Weekday'])['Prediction'].mean().reset_index()
             heatmap_data['Occupancy_Pct'] = (heatmap_data['Prediction'] * 100).round(1)
             pivot_grid = heatmap_data.pivot(index='Hour', columns='Weekday', values='Occupancy_Pct')
             days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
             pivot_grid = pivot_grid.reindex(columns=days_order)
-            fig = px.imshow(pivot_grid, text_auto=True, color_continuous_scale="Blues", aspect="auto", template="plotly_dark")
-            fig.update_layout(coloraxis_showscale=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig, use_container_width=True)
+            
+            fig_heatmap = px.imshow(pivot_grid, text_auto=True, color_continuous_scale="Blues", aspect="auto", template="plotly_dark", labels=dict(color="Probability"))
+            fig_heatmap.update_layout(coloraxis_showscale=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_heatmap, use_container_width=True)
         else:
-            fig = go.Figure(go.Indicator(mode = "gauge+number", value = latest['Probability'] * 100, 
-                title = {'text': "Live Confidence"}, gauge = {'axis': {'range': [None, 100]}, 'bar': {'color': "#d81e05"}}))
-            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig, use_container_width=True)
+            # --- LIVE GAUGE (UPDATED TO SHOW PROBABILITY) ---
+            
+            # 1. Get raw probability (0.0 to 1.0)
+            raw_prob = latest['Probability']
+
+            # 2. Draw Gauge showing "Chance of Occupancy" instead of "Confidence"
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = raw_prob * 100,    # <--- Now shows 0% if empty, 100% if full
+                title = {'text': "Occupancy Probability"},
+                gauge = {
+                    'axis': {'range': [None, 100]}, 
+                    'bar': {'color': "#00e6ff"}, # Blue bar to match trend line
+                    'steps': [
+                        {'range': [0, 50], 'color': "rgba(0, 255, 0, 0.1)"},   # Green zone (likely empty)
+                        {'range': [50, 100], 'color': "rgba(255, 0, 0, 0.1)"}  # Red zone (likely full)
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 50
+                    }
+                }
+            ))
+            fig_gauge.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
+            
+            import time
+            st.plotly_chart(fig_gauge, use_container_width=True, key=f"gauge_live_{time.time()}")
 
     st.markdown("---")
+    
+    # --- 4. BOTTOM ROW (TRENDS + DATA) ---
     b_col1, b_col2 = st.columns(2)
+    
     with b_col1:
         st.subheader("Occupancy Probability Trends")
-        if not is_live:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_processed['Date'], y=df_processed['Probability'], mode='lines', 
-                name='Model Confidence (%)', line=dict(color='#00e6ff', width=2), fill='tozeroy', fillcolor='rgba(0, 230, 255, 0.1)'))
-            if 'Occupancy' in df_processed.columns:
-                fig.add_trace(go.Scatter(x=df_processed['Date'], y=df_processed['Occupancy'], mode='lines', 
-                    name='Real Occupancy (0/1)', line=dict(color="#39d043", width=1)))
-            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', 
-                margin=dict(t=10, l=0, r=0, b=0), yaxis_tickformat=".0%", legend=dict(orientation="h", yanchor="bottom", y=1.02, x=1))
-            st.plotly_chart(fig, use_container_width=True)
+        
+        # We create a specific figure for trends (fig_trend) to avoid conflicts
+        fig_trend = go.Figure()
+        
+        # This now runs in BOTH Live and History modes
+        fig_trend.add_trace(go.Scatter(
+            x=df_processed['Date'], 
+            y=df_processed['Probability'], 
+            mode='lines', 
+            name='Model Confidence (%)', 
+            line=dict(color='#00e6ff', width=2), 
+            fill='tozeroy', 
+            fillcolor='rgba(0, 230, 255, 0.1)'
+        ))
+        
+        if 'Occupancy' in df_processed.columns:
+            fig_trend.add_trace(go.Scatter(
+                x=df_processed['Date'], 
+                y=df_processed['Occupancy'], 
+                mode='lines', 
+                name='Real Occupancy (0/1)', 
+                line=dict(color="#39d043", width=1)
+            ))
+            
+        fig_trend.update_layout(
+            template="plotly_dark", 
+            paper_bgcolor='rgba(0,0,0,0)', 
+            plot_bgcolor='rgba(0,0,0,0)', 
+            margin=dict(t=10, l=0, r=0, b=0), 
+            yaxis_tickformat=".0%", 
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=1)
+        )
+        
+        import time
+        st.plotly_chart(fig_trend, use_container_width=True, key=f"trend_chart_{time.time()}")
             
     with b_col2:
         st.subheader("Detailed Sensor Log")
         table_df = df_processed.sort_values('Date', ascending=False)
-        st.dataframe(table_df[['Date', 'Temperature', 'CO2', 'Probability']].style.background_gradient(subset=['CO2'], cmap='Reds'), use_container_width=True, height=300)
-        st.download_button("📥 Download Data as CSV", table_df.to_csv(index=False).encode('utf-8'), 'occupancy_report.csv', 'text/csv')
+        
+        # 1. Select the columns you want to see (Add engineered features here)
+        # We check if they exist first to avoid errors if features haven't generated yet
+        columns_to_show = ['Date', 'Temperature', 'Humidity', 'CO2', 'CO2_Delta', 'Probability', 'Prediction']
+        final_cols = [c for c in columns_to_show if c in table_df.columns]
+        
+        # 2. Render with fancy formatting
+        st.dataframe(
+            table_df[final_cols].style
+            .background_gradient(subset=['CO2'], cmap='Reds')  # Red for high CO2
+            .background_gradient(subset=['Probability'], cmap='Blues')  # Blue for high confidence
+            .format({
+                'Probability': '{:.1%}',  # Show as 95.0%
+                'Temperature': '{:.1f}°C', 
+                'Humidity': '{:.1f}%',
+                'CO2': '{:.0f} ppm',
+                'CO2_Delta': '{:+.1f}'    # Show signs like +5.0 or -2.0
+            }), 
+            use_container_width=True, 
+            height=300
+        )
+        
+        if not is_live:
+            st.download_button(
+                label="📥 Download Data as CSV",
+                data=table_df.to_csv(index=False).encode('utf-8'),
+                file_name='occupancy_report.csv',
+                mime='text/csv',
+                key="final_download_btn"
+            )
 
 # ==========================================
 # 3. RETRAINING (UPDATED WITH GOLD STANDARD)

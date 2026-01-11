@@ -90,3 +90,90 @@ To prevent "Data Leakage" (the cardinal sin of time-series modeling), we rejecte
 * **Temporal Integrity:** We utilized **`TimeSeriesSplit`** (3 splits). This ensures that the training set always consists of time periods *prior* to the validation set. We never use future data to predict the past.
 * **Gold Standard Hold-Out:** The file `datatest.txt` was completely sequestered from the training process. It serves as the final, unbiased "Exam" for the models.
 * **Metric Selection:** We optimized for **F1 Score** rather than Accuracy. Since rooms are empty for long periods (imbalanced classes), a model that simply guessed "Empty" every time would have high Accuracy but zero utility. F1 Score balances Precision (trust) and Recall (coverage).
+
+## 6. Installation (One-Time Setup)
+
+### Prerequisites
+* **Python 3.8+** must be installed.
+* **Internet Connection** (to download libraries).
+
+### Step 1: Download the Application
+Download the repository and extract it. Open your terminal (Command Prompt or PowerShell) and navigate to the project folder:
+
+```powershell
+cd occupancy_app/python_model/occupancy-ml-streamlit
+
+```
+
+### Step 2: Install Dependencies
+
+Run this command to install all necessary tools (Streamlit, XGBoost, Plotly, etc.):
+
+```powershell
+pip install -r requirements.txt
+
+```
+
+---
+
+## 7. How to Run the Dashboard
+
+To start the application, run the following command in your terminal.
+*(Note: We use `python -m` to ensure the system finds the application correctly).*
+
+```powershell
+python -m streamlit run app_occupancy.py
+
+```
+
+**What happens next?**
+
+1. You will see a message: "You can now view your Streamlit app in your browser."
+2. A local web server will start.
+3. Your web browser will automatically open to `http://localhost:8501`.
+
+---
+
+## 8. Using the Dashboard
+
+The application is divided into three tabs:
+
+### 📊 Tab 1: Dashboard (Live Monitor)
+
+* **Main Chart:** Shows the live CO2 levels (Yellow Line) and the AI's Probability of Occupancy (Blue Area).
+* **Metric Cards:**
+* **Bad Air %:** Percentage of time people were present while CO2 > 1000 ppm.
+* **AI Confidence:** How sure the model is about its current prediction.
+
+
+* **Sidebar Controls:**
+* **Select Model:** Switch between the "Active" model and the "Baseline" (Backup) model.
+* **Data Source:** Choose "Live Simulation" to see real-time movements.
+
+
+
+### 🧠 Tab 2: Model Retraining (AI Lab)
+
+* **Step 1:** Upload a new CSV dataset.
+* **Step 2:** Click **"Train Challenger"**. The system builds a new model.
+* **Step 3:** Review the **"Scorecard"**. If the new model (Challenger) has a higher F1 Score than the current one, click **"Promote Challenger"**.
+
+### 📘 Tab 3: Help
+
+* Contains a glossary of terms and troubleshooting tips.
+
+---
+
+## 9. Troubleshooting
+
+**Error: "background_gradient requires matplotlib"**
+
+* **Fix:** Run `pip install -r requirements.txt` again to install the missing visualization tools.
+
+**The Dashboard is blank or slow**
+
+* **Fix:** Refresh your web browser page (F5).
+
+```
+
+```
